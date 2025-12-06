@@ -1,5 +1,14 @@
 name: 'setup-slurm-action'
 description: 'Setup slurm cluster on GitHub Actions using https://github.com/galaxyproject/ansible-slurm'
+inputs:
+  memory:
+    description: Amount of memory in MB to allocate to this node
+    required: true
+    default: 2000
+  cpus:
+    description: Number of physical (not virtual) CPUs to allocate to the node
+    required: true
+    default: 1
 branding:
   icon: arrow-down-circle
   color: blue
@@ -11,7 +20,7 @@ runs:
     - name: Download slurm ansible roles
       shell: bash -e {0}
       run: |
-        ansible-galaxy install galaxyproject.slurm,1.0.1
+        ansible-galaxy role install https://github.com/galaxyproject/ansible-slurm/archive/1.0.1.tar.gz
 
     - name: Apt prerequisites
       shell: bash -e {0}
@@ -27,7 +36,7 @@ runs:
           - name: Slurm all in One
             hosts: localhost
             roles:
-              - role: galaxyproject.slurm
+              - role: 1.0.1
                 become: true
             vars:
                 slurm_upgrade: true
@@ -42,6 +51,7 @@ runs:
                     SlurmdSpoolDir: /tmp/slurmd # the default /var/lib/slurm/slurmd does not work because of noexec mounting in github actions
                     StateSaveLocation: /var/lib/slurm/slurmctld
                     AccountingStorageType: accounting_storage/slurmdbd
+                    SelectType: select/cons_tres
                 slurmdbd_config:
                     StorageType: accounting_storage/mysql
                     PidFile: /run/slurmdbd.pid
@@ -52,12 +62,12 @@ runs:
                     StoragePort: 8888
                     DbdHost: localhost
                 slurm_create_user: yes
-                #slurm_munge_key: "../../../munge.key"
                 slurm_nodes:
                     - name: localhost
                       State: UNKNOWN
-                      Sockets: 1
+                      Sockets: ${{ inputs.cpus }}
                       CoresPerSocket: 2
+                      RealMemory: ${{ inputs.memory }}
                 slurm_user:
                     comment: "Slurm Workload Manager"
                     gid: 1002
@@ -81,18 +91,21 @@ runs:
     - name: Add Slurm Account
       shell: bash -e {0}
       run: |
-        sudo retry --until=success -- sacctmgr -i create account "Name=runner"
-        sudo sacctmgr -i create user "Name=runner" "Account=runner"
+        sudo retry --times=24 --delay=5 --until=success -- sacctmgr -i create account "Name=runner"
+        sudo retry --times=24 --delay=5 --until=success -- sacctmgr -i create user "Name=runner" "Account=runner"
 
-    - name: Configure proxy for sacct
-      shell: bash -e {0}
-      run: |
-        # By using this script instead of the real sacct, we avoid the need to install
-        # a full slurmdbd in the CI.
-        echo 'alias sacct=.github/workflows/scripts/sacct-proxy.py' >> ~/.bashrc
-
-    - name: Test slurm submission
+    - name: Test srun submission
       shell: bash -e {0}
       run: |
         srun -vvvv echo "hello world"
         sudo cat /var/log/slurm/slurmd.log
+
+    - name: Show partition info
+      shell: bash -e {0}
+      run: |
+        scontrol show partition
+
+    - name: Test sbatch submission
+      shell: bash -e {0}
+      run: |
+        sbatch -vvvv -N 1 --mem 5 --wrap "echo 'hello world'"
